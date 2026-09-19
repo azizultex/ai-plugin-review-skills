@@ -8,7 +8,9 @@ Read the current directory to find:
 
 ## Step 2 — Scan All Files
 
-Recursively scan all PHP, JS, JSX, and TS files in the current directory including subdirectories: `includes/`, `admin/`, `templates/`, `src/`, `assets/`, `build/`, `dist/`, `gutenberg/`.
+Recursively scan all PHP, JS, JSX, and TS files in the current directory including subdirectories: `includes/`, `admin/`, `app/`, `inc/`, `templates/`, `src/`, `assets/`, `build/`, `dist/`, `gutenberg/`, `lib/`, `vendor/`, `appsero/` — plus minified bundles and `*.js.map` files.
+
+**Bundled SDKs and vendored libraries are in scope** — WordPress.org reviewers flag issues inside them (telemetry SDKs, updaters, SCSS compilers). `// phpcs:ignore` comments do not exempt code. Report every occurrence of a pattern, not just the first.
 
 ## Step 3 — Security Checks Only
 
@@ -30,6 +32,9 @@ For every issue found, provide:
 - `implode(',', $ids)` inside SQL queries
 - `LIMIT $offset, $per_page` without prepare
 - `$wpdb->query("...{$var}...")` or `$wpdb->get_results("...$var...")`
+- `apply_filters()` / `esc_sql()` values concatenated into `ORDER BY` or column names (use an allowlist)
+- `prepare()` applied to a fragment in one place while the query executes elsewhere — prepare must wrap the full query at the call site
+- Queries silenced with `//phpcs:ignore WordPress.DB.*`
 
 ```php
 // Examples to flag:
@@ -52,7 +57,12 @@ wp_add_inline_style('handle', $var);    // $var not escaped
 echo $_POST['field'];
 echo $_GET['param'];
 ```
-**Fix:** Use `esc_html()`, `esc_attr()`, `esc_url()`, `esc_js()`, `wp_kses_post()` as appropriate to context.
+Also flag:
+- `json_encode()` output (use `wp_json_encode()`), and `__()` / `sprintf( __() )` echoed without escaping (`__()` does not escape)
+- Shortcode / filter callbacks **returning** unescaped HTML, and shortcode `$atts` printed into attributes (Contributor → Admin stored XSS, e.g. `[shortcode class='" onmouseover="alert(1)"']`)
+- Inline CSS/JS built from options (`wp_add_inline_style`, `echo "<style>...$var..."`), translations injected into jQuery `.html()`
+
+**Fix:** Use `esc_html()`, `esc_attr()`, `esc_url()`, `esc_js()`, `wp_kses_post()`, `esc_html__()`, `wp_json_encode()` as appropriate to context — escape late, even for values sanitized on save.
 **Severity:** HIGH
 
 ---
@@ -77,8 +87,13 @@ $ip   = $_SERVER['HTTP_X_FORWARDED_FOR'];
 $tag  = $_POST['tag'];
 $col  = $_GET['col'];
 $file = $_GET['download_file'];
+$tab  = filter_input( INPUT_GET, 'tab' );                          // no filter = unsanitized
+$body = json_decode( file_get_contents( 'php://input' ), true );  // json_decode is not sanitization
+$data = (object) $_POST;
+$name = esc_attr( $_POST['name'] );                                // escaping ≠ sanitizing
+wp_verify_nonce( $_POST['nonce'], 'x' );                           // sanitize the nonce too
 ```
-**Fix:** `sanitize_text_field()`, `absint()`, `sanitize_email()`, `esc_url_raw()`, `sanitize_key()`, `sanitize_file_name()`.
+**Fix:** `sanitize_text_field( wp_unslash( ... ) )`, `absint()`, `sanitize_email()`, `esc_url_raw()`, `sanitize_key()`, `sanitize_file_name()`.
 **Severity:** HIGH
 
 ---
@@ -94,7 +109,11 @@ if ( ! empty( $nonce ) && ! wp_verify_nonce( $nonce, 'action' ) ) { ... }
 
 // WRONG — nonce only checked inside another condition
 if ( isset( $_GET['page'] ) && ! wp_verify_nonce(...) ) { ... }
+
+// WRONG — skipped entirely when the attacker omits the nonce
+if ( isset( $_POST['nonce'] ) && ! wp_verify_nonce( $_POST['nonce'], 'action' ) ) { ... }
 ```
+3. Submission handling outside hooked functions (runs on every page load), or state changes inside display hooks such as `admin_notices` driven by request data (e.g. bulk-action IDs)
 
 **Correct pattern — fail early:**
 ```php
@@ -114,7 +133,7 @@ add_action( 'wp_ajax_my_action', function() {
     delete_option('something');
 });
 ```
-**Note:** Nonce checks alone do NOT replace capability checks. Both are required for privileged actions.
+**Note:** Nonce checks alone do NOT replace capability checks. Both are required for privileged actions. Reviewers flag every handler that "verifies a nonce but lacks a capability check" — including shared input helpers (e.g. a `get_body()` reading `php://input`) that feed privileged handlers, and AJAX endpoints that install/activate plugins.
 **Severity:** CRITICAL
 
 ---
@@ -191,7 +210,9 @@ register_rest_route( 'myplugin/v1', '/user/data', array(
     'permission_callback' => '__return_true',
 ) );
 ```
-**Fix:** Use `current_user_can()` as the callback for any endpoint that handles protected data or actions:
+3. A request parameter chooses which method runs without an allowlist: `$this->{ 'action_' . $request['action'] }( $request );`
+
+**Fix:** Use `current_user_can()` as the callback for any endpoint that handles protected data or actions, and dispatch only via an explicit allowlist:
 ```php
 'permission_callback' => function() {
     return current_user_can( 'manage_options' );
@@ -208,6 +229,61 @@ register_rest_route( 'myplugin/v1', '/user/data', array(
 - Passwords stored in plain text in options
 
 **Severity:** CRITICAL / HIGH depending on exposure
+
+---
+
+### S14. Phoning Home / Undisclosed Data Transmission
+**Detect:**
+- Telemetry SDKs (Appsero Insights, Freemius, custom trackers) sending any request before explicit opt-in — including "tracking skipped" pings with a site hash/project ID
+- Third-party widgets auto-loaded in wp-admin (e.g. Headway changelog widget) that leak admin IP/user agent
+- IP-lookup calls (`api.ipify.org`, `icanhazip.com`), Google Analytics/pixels in wp-admin (never allowed, even opt-in)
+- Remote requests on activation or every admin page load (promo JSON, CRM contact sync)
+- Any outbound domain not documented in readme.txt `== External services ==`
+
+**Attack vector / risk:** Privacy violation and data leakage of administrator/site data to third parties without consent (Guidelines 7 & 9).
+**Fix:** Off by default; declining sends nothing; document every service with ToS/Privacy links.
+**Severity:** HIGH
+
+---
+
+### S15. Update Checker / Remote Code Delivery
+**Detect:** `pre_set_site_transient_update_plugins`, `site_transient_update_plugins`, `plugins_api` filters, bundled `Updater.php` / Plugin Update Checker classes, or code that downloads and installs/executes packages from non-WordPress.org servers.
+**Attack vector:** A compromised vendor server can push arbitrary code to every site; it also bypasses WordPress.org review.
+**Fix:** Remove updater code from the WordPress.org build.
+**Severity:** CRITICAL
+
+---
+
+### S16. Writing Executable Files / Disallowed Write Locations
+**Detect:** `file_put_contents()`, `fwrite()`, `WP_Filesystem->put_contents()`, `copy()` writing into plugin/theme folders (including your own or your Pro add-on), `WP_PLUGIN_DIR`, `ABSPATH`, or writing any `.php` file; uploads saved with user-controlled names/extensions.
+**Attack vector:** Path traversal or input-controlled content becomes remote code execution.
+**Fix:** Store data in the database; if files are unavoidable use `wp_upload_dir()` + a slug subfolder with `sanitize_file_name()` and an extension allowlist; never write PHP.
+**Severity:** CRITICAL
+
+---
+
+### S17. Unvalidated Dynamic Names, Unbounded Storage and IDOR
+**Detect:**
+- Request data interpolated into option/transient/meta/cache names without an allowlist (`update_option( 'x_' . $_REQUEST['notice'] . '_notice', ... )`)
+- Public (nopriv / `__return_true`) endpoints that create a transient/option per request (DB growth, cache poisoning), or cache keys missing inputs that affect the cached value
+- Writes (`update_option`, `update_user_meta`) during front-end rendering
+- User-supplied user/object IDs used to modify another user's data without ownership checks
+
+**Fix:** Allowlist names, cast/bound numeric input, require capabilities + ownership checks for writes, and key caches on the full sanitized input.
+**Severity:** HIGH
+
+---
+
+### S18. Settings Registered Without Sanitization
+**Detect:** `register_setting()` without a third argument, with a string/empty third argument, or with a dynamically-built args array that may lack `sanitize_callback`; settings saved via custom AJAX with `update_option( $name, $decoded_json )` and no per-field sanitization.
+**Fix:**
+```php
+register_setting( 'myplugin_group', 'myplugin_options', array(
+    'type'              => 'array',
+    'sanitize_callback' => 'myplugin_sanitize_options',
+) );
+```
+**Severity:** HIGH
 
 ---
 

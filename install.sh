@@ -50,8 +50,8 @@ echo ""
 echo -e "${GREEN}Skills installed successfully.${NC}"
 echo ""
 echo "Available commands in Claude Code:"
-echo -e "  ${YELLOW}/wp-plugin-review${NC}  — Full 30-category compliance and security audit"
-echo -e "  ${YELLOW}/wp-security-scan${NC}  — Focused 12-category security vulnerability scan"
+echo -e "  ${YELLOW}/wp-plugin-review${NC}  — Full 52-category compliance and security audit"
+echo -e "  ${YELLOW}/wp-security-scan${NC}  — Focused 18-category security vulnerability scan"
 echo ""
 
 if [ "$INSTALL_DIR" = "$HOME/.claude/commands" ]; then

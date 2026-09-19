@@ -10,8 +10,8 @@ Built from real rejection feedback received from the WordPress.org review team, 
 
 | Command | What It Does |
 |---|---|
-| `/wp-plugin-review` | Full 33-category compliance and security audit |
-| `/wp-security-scan` | Focused scan covering 13 security vulnerability categories |
+| `/wp-plugin-review` | Full 52-category compliance and security audit, plus a resubmission checklist |
+| `/wp-security-scan` | Focused scan covering 18 security vulnerability categories |
 
 Both commands automatically scan the plugin in the current directory. No arguments needed.
 
@@ -77,7 +77,7 @@ For a security-only scan:
 
 ## What Gets Checked
 
-### Full Review (`/wp-plugin-review`) — 33 categories
+### Full Review (`/wp-plugin-review`) — 52 categories
 
 **Compliance**
 - Missing `composer.json` when Composer is used
@@ -114,9 +114,30 @@ For a security-only scan:
 - Powered By / credit links displayed without explicit opt-in
 - REST API routes missing or using improper `permission_callback`
 - Hardcoded admin-ajax URL in JavaScript (must use `wp_localize_script`)
-- Invalid or unresolvable plugin/author URIs in plugin header
+- Invalid or unresolvable plugin/author URIs and readme Terms/Privacy links (404s)
 
-### Security Scan (`/wp-security-scan`) — 13 categories
+**Closure-driven checks (added from 2025–2026 Closure Notices)**
+- Trialware & locked features — license/`is_pro` gates, hard-coded false flags, usage caps, disabled Pro UI, forced free defaults, upsell copy for included features (Guideline 5/6)
+- Undocumented external services — every domain (incl. your own, SDK endpoints, minified JS, commented URLs) must be in readme `== External services ==` with ToS/Privacy links
+- Phoning home / tracking without opt-in — telemetry SDK "skip" pings, auto-loaded admin widgets, GA in wp-admin (Guideline 7/9)
+- Update checkers / changing core update behaviour
+- Bundled PHP libraries not scoped (Strauss / Mozart / PHP-Scoper)
+- Writing to disallowed locations or modifying PHP files
+- Changing global behaviour (global filters, core constants, `flush_rewrite_rules` on every load)
+- Forcing PHP limits / `setlocale()` globally
+- HEREDOC / NOWDOC syntax
+- `register_setting()` without a concrete `sanitize_callback`
+- i18n errors — variables/constants in gettext, missing text domain, unneeded `load_plugin_textdomain()`
+- Activation problems on a clean install with `WP_DEBUG` (missing vendor files, output, dbDelta formatting, unchecked dependencies, front-end redirects)
+- Admin assets loaded on every screen / unscoped CSS
+- File names with spaces, special characters or case-only differences
+- Unneeded folders & not-permitted files (`.idea`, `.wordpress-org`, `.zip`, dotfiles)
+- readme/header metadata — License, Requires at least, Tested up to, Requires Plugins
+- Links to `?filter=5` reviews
+- Unvalidated dynamic option/transient names, unbounded storage, front-end writes, IDOR
+- Unsafe superglobal use in vendored code and debug leftovers
+
+### Security Scan (`/wp-security-scan`) — 18 categories
 
 - SQL injection
 - XSS via unescaped output
@@ -131,12 +152,26 @@ For a security-only scan:
 - Insecure HTTP requests via cURL
 - REST API routes missing or using improper `permission_callback`
 - Sensitive data exposure (hardcoded credentials, debug output)
+- Phoning home / undisclosed data transmission
+- Update checkers / remote code delivery
+- Writing executable files / disallowed write locations
+- Unvalidated dynamic names, unbounded storage and IDOR
+- Settings registered without sanitization
 
 ---
 
 ## Tips
 
 - Fix all **Blocker** and **High** severity issues before submitting to WordPress.org
-- Issues found inside `vendor/` third-party libraries are noted separately — they are generally acceptable
+- Issues inside bundled SDKs and `vendor/` libraries **are** flagged by WordPress.org reviewers (e.g. telemetry/licensing SDKs caused findings in every recent closure) — fix, update, scope, or remove them
+- Fix **every** instance of an issue; reviewers only show examples and re-review the whole plugin each time
+- Trialware is the most common closure reason, and a repeat finding ends the review — fix the UI and the backend together
+- After uploading to SVN (bump Version + Stable tag, create the tag), reply to the same review email — the review does not continue until you do
 - Run `/wp-plugin-review` before every major release, not just before first submission
 - The security scan is faster — use it during active development, the full review before submission
+
+---
+
+## Changelog
+
+**2026-09** — Analyzed the 2025–2026 WordPress.org Closure Notices and re-reviews for eight plugins. Added 19 categories to `/wp-plugin-review` (34–52) and 5 to `/wp-security-scan` (S14–S18). Expanded existing checks (SQL, escaping, sanitization, prefixes, core includes, remote files, trademarks, outdated libraries, activation changes, nonces and capabilities), put bundled vendor code in scope, and appended a resubmission checklist to the full review output.
